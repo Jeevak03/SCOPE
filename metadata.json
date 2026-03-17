@@ -1,0 +1,5 @@
+{
+  "name": "Supply Chain Orchestrator",
+  "description": "Enterprise Supply Chain Assistant combining LPO, Procurement, and Document Intelligence agents with intelligent orchestration.",
+  "requestFramePermissions": []
+}

@@ -38,7 +38,7 @@ The application follows a modern, decoupled architecture, utilizing a robust sta
 *   **Runtime:** Node.js (v18+ recommended)
 *   **Framework:** Express.js for building robust RESTful APIs and handling Server-Sent Events (SSE).
 *   **Architecture Pattern:** Clean Architecture principles (Controllers -> Services -> Agents -> LLM -> Data).
-*   **AI Integration:** OpenAI API (`OPENAI_API_KEY`) is used to power the intelligent agents and reasoning chains.
+*   **AI Integration:** The platform supports multiple LLM providers. By configuring `LLM_PROVIDER` in `.env.local`, you can seamlessly switch between the OpenAI API (`OPENAI_API_KEY`) or the Google Gemini API (`GEMINI_API_KEY`) to power the intelligent agents and reasoning chains.
 *   **Data Storage:** An internal JSON database (`backend/data/internal-db.json`) is used to serve dynamic data via `/api/data/:type` endpoints, allowing for realistic data manipulation and retrieval.
 *   **Communication:** Server-Sent Events (SSE) are utilized to stream real-time chat responses from the multi-agent system to the frontend, providing immediate feedback and visualizing the AI's "thought process."
 

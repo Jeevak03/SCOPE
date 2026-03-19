@@ -25,6 +25,7 @@ interface CompletionOptions {
 export const generateCompletion = async (
     systemPrompt: string,
     userPrompt: string,
+    history: any[] = [],
     options: CompletionOptions = {}
 ): Promise<string> => {
     const openai = getClient();
@@ -33,6 +34,12 @@ export const generateCompletion = async (
 
     let lastError = null;
 
+    const messages = [
+        { role: 'system', content: systemPrompt },
+        ...history,
+        { role: 'user', content: userPrompt }
+    ];
+
     for (let i = 0; i <= retries; i++) {
         try {
             const controller = new AbortController();
@@ -40,10 +47,7 @@ export const generateCompletion = async (
 
             const completion = await openai.chat.completions.create({
                 model: options.model || defaultModel,
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: userPrompt }
-                ],
+                messages: messages as any,
                 temperature: options.temperature ?? 0.1,
                 max_tokens: options.maxTokens,
                 response_format: options.jsonMode ? { type: 'json_object' } : undefined
@@ -75,11 +79,18 @@ export const generateCompletion = async (
 export const streamCompletion = async (
     systemPrompt: string,
     userPrompt: string,
+    history: any[] = [],
     res: Response,
     options: CompletionOptions = {}
 ) => {
     const openai = getClient();
     const timeoutMs = options.timeoutMs ?? 60000;
+
+    const messages = [
+        { role: 'system', content: systemPrompt },
+        ...history,
+        { role: 'user', content: userPrompt }
+    ];
 
     try {
         const controller = new AbortController();
@@ -87,10 +98,7 @@ export const streamCompletion = async (
 
         const stream = await openai.chat.completions.create({
             model: options.model || defaultModel,
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: userPrompt }
-            ],
+            messages: messages as any,
             temperature: options.temperature ?? 0.7,
             max_tokens: options.maxTokens,
             stream: true,

@@ -1,4 +1,4 @@
-import { generateCompletion, parseJSONResponse } from '../llm/wrapper';
+import { generateCompletion, streamCompletion, parseJSONResponse } from '../llm/wrapper';
 import { PlanningAgent } from '../agents/PlanningAgent';
 import { LogisticsAgent } from '../agents/LogisticsAgent';
 import { ProcurementAgent } from '../agents/ProcurementAgent';
@@ -24,6 +24,7 @@ export interface RouteDecision {
     agent: string;
     entities: Record<string, string>;
     reasoning: string;
+    confidence: number;
 }
 
 export class Orchestrator {
@@ -45,6 +46,9 @@ Available Agents:
 - DOCUMENT (Contracts, Legal texts)
 - ORCHESTRATOR (General conversation, full system scans, generic greetings)
 
+Consider the user's previous conversation history provided in the system context.
+If the query refers to "it" or "that", use the history to determine the entity.
+
 Output strictly in JSON format (do not use markdown wrapping or additional text):
 {
   "intent": "CONVERSATION" | "QUERY" | "ACTION",
@@ -52,18 +56,20 @@ Output strictly in JSON format (do not use markdown wrapping or additional text)
   "entities": {
      "key": "Extracted entity (e.g. sku: 'SKU-001', shipment_id: 'SHP-123', vendor_name: 'Acme')"
   },
-  "reasoning": "A short, 1 sentence internal reasoning for this choice."
+  "reasoning": "A short, 1 sentence internal reasoning for this choice.",
+  "confidence": <integer between 0 and 100 representing how confident you are in this classification>
 }
 `;
 
         try {
-            const resultText = await generateCompletion("You are an expert system router outputting raw JSON.", prompt, {
+            const resultText = await generateCompletion("You are an expert system router outputting raw JSON.", prompt, context.history, {
                 jsonMode: true,
                 temperature: 0.1
             });
             const parsed = parseJSONResponse(resultText);
 
             if (parsed && parsed.intent && parsed.agent) {
+                if (!parsed.confidence) parsed.confidence = 90;
                 return parsed as RouteDecision;
             }
             throw new Error("Invalid format from LLM");
@@ -73,7 +79,8 @@ Output strictly in JSON format (do not use markdown wrapping or additional text)
                 intent: 'CONVERSATION',
                 agent: 'ORCHESTRATOR',
                 entities: {},
-                reasoning: 'Fallback classification due to error.'
+                reasoning: 'Fallback classification due to error.',
+                confidence: 50
             };
         }
     }
@@ -82,7 +89,7 @@ Output strictly in JSON format (do not use markdown wrapping or additional text)
         try {
             res.write(`data: ${JSON.stringify({
                 steps: [
-                    { id: '1', label: 'Orchestrator: Parsing user intent...', status: 'processing' },
+                    { id: '1', label: 'Orchestrator: Parsing user intent (with context)...', status: 'processing' },
                     { id: '2', label: 'Orchestrator: Identifying entities...', status: 'pending' },
                     { id: '3', label: 'Delegating to domain agent...', status: 'pending' }
                 ]
@@ -98,7 +105,8 @@ Output strictly in JSON format (do not use markdown wrapping or additional text)
                     { id: '3', label: `Delegating to ${decision.agent} Agent...`, status: 'processing' },
                     { id: '4', label: 'Agent: Analyzing domain data...', status: 'pending' }
                 ],
-                targetAgent: decision.agent
+                targetAgent: decision.agent,
+                confidence: decision.confidence
             })}\n\n`);
 
             if (decision.intent === 'CONVERSATION' || decision.agent === 'ORCHESTRATOR') {
@@ -116,15 +124,7 @@ Output strictly in JSON format (do not use markdown wrapping or additional text)
 
                  res.write(`data: ${JSON.stringify({ steps: [ { id: '4', label: 'Orchestrator: Formulating response...', status: 'completed' } ] })}\n\n`);
 
-                 const aiStream = await generateCompletion("You are the overarching Supply Chain Orchestrator Agent.", prompt, { temperature: 0.5 });
-
-                 const chunks = aiStream.split(' ');
-                 for(const chunk of chunks) {
-                     res.write(`data: ${JSON.stringify({ content: chunk + ' ' })}\n\n`);
-                     await new Promise(r => setTimeout(r, 20));
-                 }
-                 res.write('data: [DONE]\n\n');
-                 res.end();
+                 await streamCompletion("You are the overarching Supply Chain Orchestrator Agent.", prompt, context.history, res, { temperature: 0.5 });
                  return;
             }
 

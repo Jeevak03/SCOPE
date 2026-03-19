@@ -23,6 +23,7 @@ export interface UserProfile {
 }
 
 export interface ChatMessage {
+  confidence?: number;
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;

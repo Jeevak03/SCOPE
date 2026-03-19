@@ -15,7 +15,8 @@ describe('Agents Data Retrieval', () => {
     const context: AgentContext = {
         userName: 'Test User',
         userRole: 'EXECUTIVE',
-        entities: {}
+        entities: {},
+        history: []
     };
 
     it('PlanningAgent retrieves SKU specific data', () => {

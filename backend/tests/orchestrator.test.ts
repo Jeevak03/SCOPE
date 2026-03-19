@@ -15,7 +15,8 @@ describe('Orchestrator Core', () => {
              intent: 'QUERY',
              agent: 'LOGISTICS',
              entities: { shipment_id: 'SHP-1092' },
-             reasoning: 'User is asking about a specific shipment.'
+             reasoning: 'User is asking about a specific shipment.',
+             confidence: 95
         };
 
         vi.spyOn(llmWrapper, 'generateCompletion').mockResolvedValue(JSON.stringify(mockedClassifyResult));
@@ -24,7 +25,8 @@ describe('Orchestrator Core', () => {
         const context: AgentContext = {
              userRole: 'LOGISTICS',
              userName: 'James Foster',
-             entities: {}
+             entities: {},
+             history: []
         };
 
         const mockRes = {
@@ -47,7 +49,8 @@ describe('Orchestrator Core', () => {
          const context: AgentContext = {
              userRole: 'EXECUTIVE',
              userName: 'Sarah',
-             entities: {}
+             entities: {},
+             history: []
          };
 
          const mockRes = {

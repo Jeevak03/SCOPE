@@ -101,6 +101,12 @@ const generateOpenAICompletion = async (
     return completion.choices[0].message.content || '';
 };
 
+function validateContents(contents: any[]) {
+    if (!contents.length || contents[0].role !== "user") {
+        throw new Error("Gemini requires first role to be 'user'");
+    }
+}
+
 const generateGeminiCompletion = async (
     systemPrompt: string,
     userPrompt: string,
@@ -116,26 +122,37 @@ const generateGeminiCompletion = async (
     });
 
     // Map history to Gemini format
-    const geminiHistory = history.map(m => ({
+    let contents = history.map(m => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }]
     }));
 
-    const chat = model.startChat({
-        history: geminiHistory,
+    // Always append the current user prompt
+    contents.push({
+        role: 'user',
+        parts: [{ text: userPrompt }]
+    });
+
+    // Remove any leading messages that are not from the user
+    while (contents.length > 0 && contents[0].role !== 'user') {
+        contents.shift();
+    }
+
+    validateContents(contents);
+
+    console.log("Gemini Request:", JSON.stringify(contents, null, 2));
+
+    const controller = new AbortController();
+    let timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    const resultPromise = model.generateContent({
+        contents,
         generationConfig: {
             temperature: options.temperature ?? 0.1,
             maxOutputTokens: options.maxTokens,
             responseMimeType: options.jsonMode ? "application/json" : "text/plain",
         }
     });
-
-    const controller = new AbortController();
-    let timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-    // Note: Gemini SDK doesn't natively support AbortSignal in generateContent yet,
-    // so we handle timeout primarily by throwing an error or wrapping the promise
-    const resultPromise = chat.sendMessage(userPrompt);
     const timeoutPromise = new Promise((_, reject) => {
         clearTimeout(timeoutId); // Clear the initial one so we don't leak it
         timeoutId = setTimeout(() => reject(new Error('AbortError')), timeoutMs);
@@ -146,6 +163,7 @@ const generateGeminiCompletion = async (
         clearTimeout(timeoutId);
         return result.response.text();
     } catch (error) {
+        console.error("Gemini Error:", error);
         clearTimeout(timeoutId);
         throw error;
     }
@@ -229,35 +247,50 @@ const streamGeminiCompletion = async (
         systemInstruction: systemPrompt,
     });
 
-    const geminiHistory = history.map(m => ({
+    let contents = history.map(m => ({
         role: m.role === 'assistant' ? 'model' : 'user',
         parts: [{ text: m.content }]
     }));
 
-    const chat = model.startChat({
-        history: geminiHistory,
-        generationConfig: {
-            temperature: options.temperature ?? 0.7,
-            maxOutputTokens: options.maxTokens,
-        }
+    contents.push({
+        role: 'user',
+        parts: [{ text: userPrompt }]
     });
+
+    while (contents.length > 0 && contents[0].role !== 'user') {
+        contents.shift();
+    }
+
+    validateContents(contents);
+
+    console.log("Gemini Request:", JSON.stringify(contents, null, 2));
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    // TODO: implement properly to catch abort.
-    const result = await chat.sendMessageStream(userPrompt);
+    try {
+        const result = await model.generateContentStream({
+            contents,
+            generationConfig: {
+                temperature: options.temperature ?? 0.7,
+                maxOutputTokens: options.maxTokens,
+            }
+        });
 
-    for await (const chunk of result.stream) {
-        const content = chunk.text();
-        if (content) {
-            res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        for await (const chunk of result.stream) {
+            const content = chunk.text();
+            if (content) {
+                res.write(`data: ${JSON.stringify({ content })}\n\n`);
+            }
         }
+    } catch (error) {
+        console.error("Gemini Error:", error);
+        res.write(`data: ${JSON.stringify({ error: "AI processing failed. Please retry." })}\n\n`);
+    } finally {
+        clearTimeout(timeoutId);
+        res.write('data: [DONE]\n\n');
+        res.end();
     }
-
-    clearTimeout(timeoutId);
-    res.write('data: [DONE]\n\n');
-    res.end();
 };
 
 export const parseJSONResponse = (response: string): any => {

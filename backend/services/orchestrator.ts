@@ -110,10 +110,21 @@ Output strictly in JSON format (do not use markdown wrapping or additional text)
             })}\n\n`);
 
             if (decision.intent === 'CONVERSATION' || decision.agent === 'ORCHESTRATOR') {
-                 let prompt = `User Query: ${query}\n\nProvide a conversational response. You are the high-level Orchestrator. Help the user navigate domains. Keep it professional.`;
+                 let prompt = `
+You are an intelligent orchestrator.
+
+User Query:
+${query}
+`;
 
                  if (decision.intent === 'ACTION' && query.toLowerCase().includes('scan')) {
-                     prompt = `User Request: Full system anomaly scan.\n\nData: LPO Agent reports SKU-004 stockout risk. Compliance Agent reports Scope 3 emissions spike. Logistics Agent reports Port Strike on West Coast.\n\nSummarize these system-wide anomalies professionally.`;
+                     prompt = `
+You are an intelligent orchestrator.
+
+User Request: Full system anomaly scan.
+Data: LPO Agent reports SKU-004 stockout risk. Compliance Agent reports Scope 3 emissions spike. Logistics Agent reports Port Strike on West Coast.
+
+Summarize these system-wide anomalies professionally.`;
                      res.write(`data: ${JSON.stringify({
                          anomalies: [
                             { id: 'A1', severity: 'critical', title: 'Inventory Risk', description: 'SKU-004 stockout imminent', confidence: 98, metric: 'Inventory' },

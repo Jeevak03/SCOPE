@@ -92,7 +92,8 @@ const OrchestratorChat: React.FC = () => {
     }]);
 
     try {
-        const response = await fetch('http://localhost:3001/api/chat', {
+        const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001';
+        const response = await fetch(`${BASE_URL}/api/orchestrator`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -159,8 +160,9 @@ const OrchestratorChat: React.FC = () => {
                 }
             }
         }
-    } catch (error) {
-        console.error("Stream error:", error);
+    } catch (err) {
+        console.error("Stream error:", err);
+        setMessages(prev => prev.map(m => m.id === responseId ? { ...m, content: m.content + '\n\n[Error: Backend not reachable on port 3001. Check server.]' } : m));
     } finally {
         setIsProcessing(false);
         setTimeout(() => {

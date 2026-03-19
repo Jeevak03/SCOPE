@@ -1,17 +1,28 @@
 import { OpenAI } from 'openai';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
 import { Response } from 'express';
 
 dotenv.config({ path: '.env.local' });
 
-const getClient = () => {
+// Determine the active provider
+const LLM_PROVIDER = process.env.LLM_PROVIDER || 'openai'; // 'openai' | 'gemini'
+
+// Initialize OpenAI
+const getOpenAIClient = () => {
     return new OpenAI({
-        apiKey: process.env.OPENAI_API_KEY || process.env.VITE_GEMINI_API_KEY || 'fake-key-for-tests',
+        apiKey: process.env.OPENAI_API_KEY || 'fake-key-for-tests',
         baseURL: process.env.OPENAI_BASE_URL,
     });
 };
 
-const defaultModel = process.env.MODEL || 'gpt-4o-mini';
+// Initialize Gemini
+const getGeminiClient = () => {
+    return new GoogleGenerativeAI(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || 'fake-key-for-tests');
+};
+
+const defaultOpenAIModel = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+const defaultGeminiModel = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
 
 interface CompletionOptions {
     model?: string;
@@ -28,40 +39,18 @@ export const generateCompletion = async (
     history: any[] = [],
     options: CompletionOptions = {}
 ): Promise<string> => {
-    const openai = getClient();
     const retries = options.retries ?? 2;
     const timeoutMs = options.timeoutMs ?? 30000;
 
     let lastError = null;
 
-    const messages = [
-        { role: 'system', content: systemPrompt },
-        ...history,
-        { role: 'user', content: userPrompt }
-    ];
-
     for (let i = 0; i <= retries; i++) {
         try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-            const completion = await openai.chat.completions.create({
-                model: options.model || defaultModel,
-                messages: messages as any,
-                temperature: options.temperature ?? 0.1,
-                max_tokens: options.maxTokens,
-                response_format: options.jsonMode ? { type: 'json_object' } : undefined
-            }, {
-                signal: controller.signal
-            });
-
-            clearTimeout(timeoutId);
-
-            if (completion.usage) {
-                console.log(`[LLM Token Usage] Prompt: ${completion.usage.prompt_tokens}, Completion: ${completion.usage.completion_tokens}, Total: ${completion.usage.total_tokens}`);
+            if (LLM_PROVIDER === 'gemini') {
+                return await generateGeminiCompletion(systemPrompt, userPrompt, history, options, timeoutMs);
+            } else {
+                return await generateOpenAICompletion(systemPrompt, userPrompt, history, options, timeoutMs);
             }
-
-            return completion.choices[0].message.content || '';
         } catch (error: any) {
             lastError = error;
             console.warn(`[LLM Error] Attempt ${i + 1}/${retries + 1} failed: ${error.message}`);
@@ -76,6 +65,92 @@ export const generateCompletion = async (
     throw new Error(`Failed to generate completion after ${retries + 1} attempts. Last error: ${lastError?.message}`);
 };
 
+const generateOpenAICompletion = async (
+    systemPrompt: string,
+    userPrompt: string,
+    history: any[],
+    options: CompletionOptions,
+    timeoutMs: number
+): Promise<string> => {
+    const openai = getOpenAIClient();
+    const messages = [
+        { role: 'system', content: systemPrompt },
+        ...history.map(m => ({ role: m.role, content: m.content })),
+        { role: 'user', content: userPrompt }
+    ];
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    const completion = await openai.chat.completions.create({
+        model: options.model || defaultOpenAIModel,
+        messages: messages as any,
+        temperature: options.temperature ?? 0.1,
+        max_tokens: options.maxTokens,
+        response_format: options.jsonMode ? { type: 'json_object' } : undefined
+    }, {
+        signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (completion.usage) {
+        console.log(`[LLM Token Usage] Prompt: ${completion.usage.prompt_tokens}, Completion: ${completion.usage.completion_tokens}, Total: ${completion.usage.total_tokens}`);
+    }
+
+    return completion.choices[0].message.content || '';
+};
+
+const generateGeminiCompletion = async (
+    systemPrompt: string,
+    userPrompt: string,
+    history: any[],
+    options: CompletionOptions,
+    timeoutMs: number
+): Promise<string> => {
+    const genAI = getGeminiClient();
+    const model = genAI.getGenerativeModel({
+        model: options.model || defaultGeminiModel,
+        systemInstruction: systemPrompt,
+    });
+
+    // Map history to Gemini format
+    const geminiHistory = history.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }]
+    }));
+
+    const chat = model.startChat({
+        history: geminiHistory,
+        generationConfig: {
+            temperature: options.temperature ?? 0.1,
+            maxOutputTokens: options.maxTokens,
+            responseMimeType: options.jsonMode ? "application/json" : "text/plain",
+        }
+    });
+
+    const controller = new AbortController();
+    let timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    // Note: Gemini SDK doesn't natively support AbortSignal in generateContent yet,
+    // so we handle timeout primarily by throwing an error or wrapping the promise
+    const resultPromise = chat.sendMessage(userPrompt);
+    const timeoutPromise = new Promise((_, reject) => {
+        clearTimeout(timeoutId); // Clear the initial one so we don't leak it
+        timeoutId = setTimeout(() => reject(new Error('AbortError')), timeoutMs);
+    });
+
+    try {
+        const result: any = await Promise.race([resultPromise, timeoutPromise]);
+        clearTimeout(timeoutId);
+        return result.response.text();
+    } catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
+    }
+};
+
+
 export const streamCompletion = async (
     systemPrompt: string,
     userPrompt: string,
@@ -83,44 +158,104 @@ export const streamCompletion = async (
     res: Response,
     options: CompletionOptions = {}
 ) => {
-    const openai = getClient();
     const timeoutMs = options.timeoutMs ?? 60000;
 
-    const messages = [
-        { role: 'system', content: systemPrompt },
-        ...history,
-        { role: 'user', content: userPrompt }
-    ];
-
     try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-        const stream = await openai.chat.completions.create({
-            model: options.model || defaultModel,
-            messages: messages as any,
-            temperature: options.temperature ?? 0.7,
-            max_tokens: options.maxTokens,
-            stream: true,
-        }, {
-            signal: controller.signal
-        });
-
-        for await (const chunk of stream) {
-            const content = chunk.choices[0]?.delta?.content || "";
-            if (content) {
-                res.write(`data: ${JSON.stringify({ content })}\n\n`);
-            }
+        if (LLM_PROVIDER === 'gemini') {
+            await streamGeminiCompletion(systemPrompt, userPrompt, history, res, options, timeoutMs);
+        } else {
+            await streamOpenAICompletion(systemPrompt, userPrompt, history, res, options, timeoutMs);
         }
-
-        clearTimeout(timeoutId);
-        res.write('data: [DONE]\n\n');
-        res.end();
     } catch (error: any) {
         console.error(`[LLM Stream Error] ${error.message}`);
         res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
         res.end();
     }
+};
+
+const streamOpenAICompletion = async (
+    systemPrompt: string,
+    userPrompt: string,
+    history: any[],
+    res: Response,
+    options: CompletionOptions,
+    timeoutMs: number
+) => {
+    const openai = getOpenAIClient();
+    const messages = [
+        { role: 'system', content: systemPrompt },
+        ...history.map(m => ({ role: m.role, content: m.content })),
+        { role: 'user', content: userPrompt }
+    ];
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    const stream = await openai.chat.completions.create({
+        model: options.model || defaultOpenAIModel,
+        messages: messages as any,
+        temperature: options.temperature ?? 0.7,
+        max_tokens: options.maxTokens,
+        stream: true,
+    }, {
+        signal: controller.signal
+    });
+
+    for await (const chunk of stream) {
+        const content = chunk.choices[0]?.delta?.content || "";
+        if (content) {
+            res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        }
+    }
+
+    clearTimeout(timeoutId);
+    res.write('data: [DONE]\n\n');
+    res.end();
+};
+
+const streamGeminiCompletion = async (
+    systemPrompt: string,
+    userPrompt: string,
+    history: any[],
+    res: Response,
+    options: CompletionOptions,
+    timeoutMs: number
+) => {
+    const genAI = getGeminiClient();
+    const model = genAI.getGenerativeModel({
+        model: options.model || defaultGeminiModel,
+        systemInstruction: systemPrompt,
+    });
+
+    const geminiHistory = history.map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: [{ text: m.content }]
+    }));
+
+    const chat = model.startChat({
+        history: geminiHistory,
+        generationConfig: {
+            temperature: options.temperature ?? 0.7,
+            maxOutputTokens: options.maxTokens,
+        }
+    });
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    // TODO: implement properly to catch abort.
+    const result = await chat.sendMessageStream(userPrompt);
+
+    for await (const chunk of result.stream) {
+        const content = chunk.text();
+        if (content) {
+            res.write(`data: ${JSON.stringify({ content })}\n\n`);
+        }
+    }
+
+    clearTimeout(timeoutId);
+    res.write('data: [DONE]\n\n');
+    res.end();
 };
 
 export const parseJSONResponse = (response: string): any => {

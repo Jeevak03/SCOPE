@@ -1,0 +1,11 @@
+
+> supply-chain-orchestrator@0.0.0 dev
+> vite
+
+
+  VITE v6.4.1  ready in 266 ms
+
+  ➜  Local:   http://localhost:3000/
+  ➜  Network: http://192.168.0.2:3000/
+4:43:14 PM [vite] .env.local changed, restarting server...
+4:43:14 PM [vite] server restarted.

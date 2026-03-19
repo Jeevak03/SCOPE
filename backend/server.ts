@@ -8,10 +8,17 @@ dotenv.config({ path: '.env.local' });
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors());
+app.use(cors({
+  origin: "http://localhost:3000",
+  credentials: true,
+}));
 app.use(express.json());
 
-app.post('/api/chat', streamChat);
+app.post('/api/orchestrator', streamChat);
+
+app.get('/health', (req, res) => {
+  res.json({ status: "backend running" });
+});
 
 // Default error handler
 app.use((err: any, req: Request, res: Response, next: express.NextFunction) => {

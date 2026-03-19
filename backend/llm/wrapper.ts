@@ -6,7 +6,7 @@ import { Response } from 'express';
 dotenv.config({ path: '.env.local' });
 
 // Determine the active provider
-const LLM_PROVIDER = process.env.LLM_PROVIDER || 'openai'; // 'openai' | 'gemini'
+const LLM_PROVIDER = process.env.LLM_PROVIDER || 'gemini'; // Default to gemini to ensure it runs
 
 // Initialize OpenAI
 const getOpenAIClient = () => {
@@ -108,6 +108,7 @@ const generateGeminiCompletion = async (
     options: CompletionOptions,
     timeoutMs: number
 ): Promise<string> => {
+    console.log("Using Gemini API...");
     const genAI = getGeminiClient();
     const model = genAI.getGenerativeModel({
         model: options.model || defaultGeminiModel,
@@ -221,6 +222,7 @@ const streamGeminiCompletion = async (
     options: CompletionOptions,
     timeoutMs: number
 ) => {
+    console.log("Using Gemini API...");
     const genAI = getGeminiClient();
     const model = genAI.getGenerativeModel({
         model: options.model || defaultGeminiModel,

@@ -4,6 +4,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { ChatMessage, AgentType, AnomalyReport, OrchestrationStep } from '../types';
 import { spendCategories, inventoryData, shipments, machineStatus, complianceMetrics, recentReturns } from '../mockData';
 import { useAuth } from '../contexts/AuthContext';
+import { analyzeIntentWithAI, generateResponseStreamWithAI, isAIEnabled } from '../ai';
 
 const OrchestratorChat: React.FC = () => {
   const { user } = useAuth();
@@ -314,7 +315,17 @@ const OrchestratorChat: React.FC = () => {
     setMessages(prev => [...prev, userMsg]);
 
     // 2. Intent Analysis
-    const intent = analyzeIntent(textToSend);
+    let intent;
+    if (isAIEnabled()) {
+        try {
+            intent = await analyzeIntentWithAI(textToSend, user.role);
+        } catch (e) {
+            console.warn("AI Intent Analysis failed, falling back to basic regex.");
+            intent = analyzeIntent(textToSend);
+        }
+    } else {
+        intent = analyzeIntent(textToSend);
+    }
     const reasoningChain = generateReasoningChain(intent, textToSend);
     
     // 3. System Reasoning Block
@@ -377,15 +388,28 @@ const OrchestratorChat: React.FC = () => {
     };
     setMessages(prev => [...prev, agentResponse]);
 
-    const words = executionResult.response.split(/(\s+)/);
-    let streamedContent = '';
-    
-    for (const word of words) {
-        streamedContent += word;
-        setMessages(prev => prev.map(m => 
-            m.id === responseId ? { ...m, content: streamedContent } : m
-        ));
-        await new Promise(r => setTimeout(r, 20 + Math.random() * 30));
+    if (isAIEnabled()) {
+        const contextString = JSON.stringify({
+           fallbackResponse: executionResult.response,
+           dataContext: executionResult.data || executionResult.anomalies || null
+        });
+
+        await generateResponseStreamWithAI(intent, textToSend, contextString, (chunk: string) => {
+            setMessages(prev => prev.map(m =>
+                m.id === responseId ? { ...m, content: chunk } : m
+            ));
+        });
+    } else {
+        // Fallback fake stream
+        const words = executionResult.response.split(/(\s+)/);
+        let streamedContent = '';
+        for (const word of words) {
+            streamedContent += word;
+            setMessages(prev => prev.map(m =>
+                m.id === responseId ? { ...m, content: streamedContent } : m
+            ));
+            await new Promise(r => setTimeout(r, 20 + Math.random() * 30));
+        }
     }
 
     setIsProcessing(false);

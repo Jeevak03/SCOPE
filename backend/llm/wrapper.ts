@@ -2,6 +2,8 @@ import { OpenAI } from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
 import { Response } from 'express';
+import fetch from 'node-fetch';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 
 dotenv.config({ path: '.env.local' });
 
@@ -18,6 +20,25 @@ const getOpenAIClient = () => {
 
 // Initialize Gemini
 const getGeminiClient = () => {
+    let fetchOptions: any = {};
+    if (process.env.HTTP_PROXY) {
+        fetchOptions.agent = new HttpsProxyAgent(process.env.HTTP_PROXY);
+    }
+
+    // Polyfill fetch for GoogleGenerativeAI to use node-fetch with proxy
+    const customFetch = (url: any, init?: any) => {
+        // Also ensure timeout logic passes down the signal if provided
+        return fetch(url, { ...init, ...fetchOptions }) as any;
+    };
+
+    // GoogleGenerativeAI supports passing a custom fetch function if it's placed in globalThis or provided via options if available, but for our version we override global fetch locally.
+    // However, the best way in this version of `@google/generative-ai` is passing a fetch function or overriding global fetch.
+    // The library uses global `fetch`.
+    if (process.env.HTTP_PROXY) {
+        // @ts-ignore
+        globalThis.fetch = customFetch;
+    }
+
     return new GoogleGenerativeAI(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || 'fake-key-for-tests');
 };
 
@@ -53,16 +74,37 @@ export const generateCompletion = async (
             }
         } catch (error: any) {
             lastError = error;
-            console.warn(`[LLM Error] Attempt ${i + 1}/${retries + 1} failed: ${error.message}`);
-            if (error.name === 'AbortError') {
-                console.warn('[LLM Error] Request timed out.');
+            console.error(`[LLM Error] Attempt ${i + 1}/${retries + 1} failed:`, error.message);
+
+            // Smart Retry Strategy: Only retry for network errors
+            if (error.message && (error.message.includes("fetch failed") || error.name === 'AbortError' || error.message.includes("network"))) {
+                if (error.name === 'AbortError') {
+                    console.warn('[LLM Error] Request timed out.');
+                }
+                if (i === retries) {
+                    console.error("❌ Max retries reached for network failure. Applying fallback.");
+                    return JSON.stringify({
+                        fallback: true,
+                        message: "I'm unable to access live AI services right now, but I can still assist with basic logic."
+                    });
+                }
+
+                // Exponential backoff
+                await new Promise(res => setTimeout(res, 1000 * Math.pow(2, i)));
+            } else {
+                // Not a network error, don't retry, just break out
+                console.error("Non-network error encountered, skipping retry.");
+                break;
             }
-            if (i === retries) break;
-            await new Promise(res => setTimeout(res, 1000 * Math.pow(2, i)));
         }
     }
 
-    throw new Error(`Failed to generate completion after ${retries + 1} attempts. Last error: ${lastError?.message}`);
+    // If we've exhausted retries or broken out early due to a non-network error
+    // For Gemini/LLM, we want to NEVER crash the system. Provide a fallback response.
+    return JSON.stringify({
+        fallback: true,
+        message: "I'm unable to access live AI services right now, but I can still assist with basic logic."
+    });
 };
 
 const generateOpenAICompletion = async (
@@ -145,25 +187,25 @@ const generateGeminiCompletion = async (
     const controller = new AbortController();
     let timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
-    const resultPromise = model.generateContent({
-        contents,
-        generationConfig: {
-            temperature: options.temperature ?? 0.1,
-            maxOutputTokens: options.maxTokens,
-            responseMimeType: options.jsonMode ? "application/json" : "text/plain",
-        }
-    });
-    const timeoutPromise = new Promise((_, reject) => {
-        clearTimeout(timeoutId); // Clear the initial one so we don't leak it
-        timeoutId = setTimeout(() => reject(new Error('AbortError')), timeoutMs);
-    });
-
     try {
-        const result: any = await Promise.race([resultPromise, timeoutPromise]);
+    console.log("Calling Gemini...");
+    console.log("Network status: attempting request...");
+        const result = await model.generateContent({
+            contents,
+            generationConfig: {
+                temperature: options.temperature ?? 0.1,
+                maxOutputTokens: options.maxTokens,
+                responseMimeType: options.jsonMode ? "application/json" : "text/plain",
+            }
+        }, {
+            signal: controller.signal
+        });
+
         clearTimeout(timeoutId);
+        console.log("✅ Gemini text generation request successful.");
         return result.response.text();
     } catch (error) {
-        console.error("Gemini Error:", error);
+        console.error("❌ Gemini text generation request failed:", error);
         clearTimeout(timeoutId);
         throw error;
     }
@@ -178,16 +220,62 @@ export const streamCompletion = async (
     options: CompletionOptions = {}
 ) => {
     const timeoutMs = options.timeoutMs ?? 60000;
+    const retries = options.retries ?? 2;
 
-    try {
-        if (LLM_PROVIDER === 'gemini') {
-            await streamGeminiCompletion(systemPrompt, userPrompt, history, res, options, timeoutMs);
-        } else {
-            await streamOpenAICompletion(systemPrompt, userPrompt, history, res, options, timeoutMs);
+    let lastError = null;
+
+    for (let i = 0; i <= retries; i++) {
+        try {
+            if (LLM_PROVIDER === 'gemini') {
+                await streamGeminiCompletion(systemPrompt, userPrompt, history, res, options, timeoutMs);
+            } else {
+                await streamOpenAICompletion(systemPrompt, userPrompt, history, res, options, timeoutMs);
+            }
+            if (!res.writableEnded) {
+                res.write('data: [DONE]\n\n');
+                res.end();
+            }
+            return; // success, break out of retry loop
+        } catch (error: any) {
+            lastError = error;
+            console.error(`[LLM Stream Error] Attempt ${i + 1}/${retries + 1} failed:`, error.message);
+
+            // Handle specific network errors for retry
+            if (error.message && (error.message.includes("fetch failed") || error.name === 'AbortError' || error.message.includes("network"))) {
+                if (error.name === 'AbortError') {
+                    console.warn('[LLM Stream Error] Request timed out.');
+                }
+
+                if (i === retries) {
+                    console.error("❌ Max retries reached for network failure in stream. Applying fallback.");
+                    const fallbackObj = {
+                        fallback: true,
+                        message: "I'm unable to access live AI services right now, but I can still assist with basic logic."
+                    };
+                    res.write(`data: ${JSON.stringify({ content: JSON.stringify(fallbackObj) })}\n\n`);
+                    res.write('data: [DONE]\n\n');
+                    res.end();
+                    return;
+                }
+
+                // Exponential backoff
+                await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)));
+            } else {
+                // Not a network error, no retry
+                console.error("Non-network error in stream, skipping retry.");
+                break;
+            }
         }
-    } catch (error: any) {
-        console.error(`[LLM Stream Error] ${error.message}`);
-        res.write(`data: ${JSON.stringify({ error: error.message })}\n\n`);
+    }
+
+    // Fallback if all retries fail or loop broken
+    const fallbackObj = {
+        fallback: true,
+        message: "I'm unable to access live AI services right now, but I can still assist with basic logic."
+    };
+    if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ content: JSON.stringify(fallbackObj) })}\n\n`);
+        res.write('data: [DONE]\n\n');
         res.end();
     }
 };
@@ -228,8 +316,6 @@ const streamOpenAICompletion = async (
     }
 
     clearTimeout(timeoutId);
-    res.write('data: [DONE]\n\n');
-    res.end();
 };
 
 const streamGeminiCompletion = async (
@@ -269,12 +355,16 @@ const streamGeminiCompletion = async (
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
+        console.log("Calling Gemini for Stream...");
+        console.log("Network status: attempting stream request...");
         const result = await model.generateContentStream({
             contents,
             generationConfig: {
                 temperature: options.temperature ?? 0.7,
                 maxOutputTokens: options.maxTokens,
             }
+        }, {
+            signal: controller.signal
         });
 
         for await (const chunk of result.stream) {
@@ -283,13 +373,12 @@ const streamGeminiCompletion = async (
                 res.write(`data: ${JSON.stringify({ content })}\n\n`);
             }
         }
+        console.log("✅ Gemini stream request completed successfully.");
     } catch (error) {
-        console.error("Gemini Error:", error);
-        res.write(`data: ${JSON.stringify({ error: "AI processing failed. Please retry." })}\n\n`);
+        console.error("❌ Gemini stream request failed:", error);
+        throw error; // Rethrow to let `streamCompletion` handle retry or fallback logic
     } finally {
         clearTimeout(timeoutId);
-        res.write('data: [DONE]\n\n');
-        res.end();
     }
 };
 

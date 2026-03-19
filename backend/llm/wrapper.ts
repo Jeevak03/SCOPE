@@ -2,8 +2,7 @@ import { OpenAI } from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
 import { Response } from 'express';
-import fetch from 'node-fetch';
-import { HttpsProxyAgent } from 'https-proxy-agent';
+import { ProxyAgent } from 'undici';
 
 dotenv.config({ path: '.env.local' });
 
@@ -20,23 +19,13 @@ const getOpenAIClient = () => {
 
 // Initialize Gemini
 const getGeminiClient = () => {
-    let fetchOptions: any = {};
     if (process.env.HTTP_PROXY) {
-        fetchOptions.agent = new HttpsProxyAgent(process.env.HTTP_PROXY);
-    }
-
-    // Polyfill fetch for GoogleGenerativeAI to use node-fetch with proxy
-    const customFetch = (url: any, init?: any) => {
-        // Also ensure timeout logic passes down the signal if provided
-        return fetch(url, { ...init, ...fetchOptions }) as any;
-    };
-
-    // GoogleGenerativeAI supports passing a custom fetch function if it's placed in globalThis or provided via options if available, but for our version we override global fetch locally.
-    // However, the best way in this version of `@google/generative-ai` is passing a fetch function or overriding global fetch.
-    // The library uses global `fetch`.
-    if (process.env.HTTP_PROXY) {
+        const proxyAgent = new ProxyAgent(process.env.HTTP_PROXY);
+        const originalFetch = globalThis.fetch;
         // @ts-ignore
-        globalThis.fetch = customFetch;
+        globalThis.fetch = (url: any, init?: any) => {
+            return originalFetch(url, { ...init, dispatcher: proxyAgent });
+        };
     }
 
     return new GoogleGenerativeAI(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || 'fake-key-for-tests');

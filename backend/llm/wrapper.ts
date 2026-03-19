@@ -2,7 +2,6 @@ import { OpenAI } from 'openai';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
 import { Response } from 'express';
-import { ProxyAgent } from 'undici';
 
 dotenv.config({ path: '.env.local' });
 
@@ -19,15 +18,6 @@ const getOpenAIClient = () => {
 
 // Initialize Gemini
 const getGeminiClient = () => {
-    if (process.env.HTTP_PROXY) {
-        const proxyAgent = new ProxyAgent(process.env.HTTP_PROXY);
-        const originalFetch = globalThis.fetch;
-        // @ts-ignore
-        globalThis.fetch = (url: any, init?: any) => {
-            return originalFetch(url, { ...init, dispatcher: proxyAgent });
-        };
-    }
-
     return new GoogleGenerativeAI(process.env.GEMINI_API_KEY || process.env.VITE_GEMINI_API_KEY || 'fake-key-for-tests');
 };
 

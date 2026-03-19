@@ -2,18 +2,18 @@ import express, { Request, Response } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { streamChat } from './controllers/chatController.js';
-import { ProxyAgent } from 'undici';
+import { Agent } from 'https';
 
 dotenv.config({ path: '.env.local' });
 
 async function checkConnectivity() {
   try {
-    const proxyAgent = process.env.HTTP_PROXY
-      ? new ProxyAgent(process.env.HTTP_PROXY)
+    const agent = process.env.HTTP_PROXY
+      ? new Agent({ keepAlive: true })
       : undefined;
 
     const res = await fetch("https://generativelanguage.googleapis.com", {
-      dispatcher: proxyAgent
+      agent
     } as any);
     console.log("✅ Gemini endpoint reachable");
   } catch (err) {
@@ -31,7 +31,7 @@ checkConnectivity();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-console.log("✅ Using native fetch (Node.js built-in)");
+console.log("✅ Running on Node.js native fetch (no undici)");
 
 app.use(cors({
   origin: "http://localhost:3000",
